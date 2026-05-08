@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+# zs — Zellij session manager
+
+SCRIPT=$(realpath "$0")
+ZS_GHOSTTY_ENV=(env GHOSTTY_AUTO_ZELLIJ=0 ZS_SUPPRESS_AUTO_ZELLIJ=1)
+ZS_STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/zs"
+ZS_EXITED_FILE="$ZS_STATE_DIR/exited-sessions"
+
+_name() { printf '%s' "${1%% *}" | sed 's/\x1b\[[0-9;]*m//g'; }
+
+_purge_session_info() {
+    local s="${1:-}"
+    case "$s" in
+        ""|.*|*/*|*..*) return 0 ;;
+    esac
+    rm -rf -- "$HOME/.cache/zellij/contract_version_1/session_info/$s"
+}
+
+_mark_exited() {
+    local s="${1:-}"
+    case "$s" in
+        ""|.*|*/*|*..*) return 0 ;;
+    esac
+    mkdir -p "$ZS_STATE_DIR"
+    { grep -Fxv -- "$s" "$ZS_EXITED_FILE" 2>/dev/null || true; printf '%s\n' "$s"; } \
+        > "$ZS_EXITED_FILE.tmp"
+    mv "$ZS_EXITED_FILE.tmp" "$ZS_EXITED_FILE"
+}
+
+_unmark_exited() {
+    local s="${1:-}"
+    [[ -f "$ZS_EXITED_FILE" ]] || return 0
+    grep -Fxv -- "$s" "$ZS_EXITED_FILE" > "$ZS_EXITED_FILE.tmp" 2>/dev/null || true
+    mv "$ZS_EXITED_FILE.tmp" "$ZS_EXITED_FILE"
+}
+
+_kill_stale_server() {
+    local s="${1:-}" pid cmd
+    case "$s" in
+        ""|.*|*/*|*..*) return 0 ;;
+    esac
+    while read -r pid; do
+        [[ -z "$pid" ]] && continue
+        cmd=$(ps -p "$pid" -o args= 2>/dev/null || true)
+        case "$cmd" in
+            *"zellij --server "*/contract_version_1/"$s")
+                kill "$pid" 2>/dev/null || true
+                ;;
+        esac
+    done < <(pgrep -f "zellij --server .*/contract_version_1/$s$" 2>/dev/null || true)
+}
+
+_delete_session_completely() {
+    local s="${1:-}"
+    zellij delete-session --force "$s" >/dev/null 2>&1 || true
+    _kill_stale_server "$s"
+    sleep 0.1
+    _purge_session_info "$s"
+}
+
+_current_session() {
+    zellij ls 2>/dev/null \
+        | sed 's/\x1b\[[0-9;]*m//g' \
+        | awk '/\(current\)/{print $1; exit}'
+}
+
+# ── Launch ─────────────────────────────────────────────────────────────────────
+if [[ -z "${ZS_INNER:-}" && $# -eq 0 ]]; then
+    ZS_CURRENT=$(zellij ls 2>/dev/null \
+        | sed 's/\x1b\[[0-9;]*m//g' \
+        | awk '/\(current\)/{print $1}' || true)
+
+    _delete_session_completely _zs
+
+    _layout=$(mktemp /tmp/zs_layout_XXXXX.kdl)
+    _cmd="ZS_INNER=1 ZS_CURRENT=$(printf '%q' "$ZS_CURRENT") $(printf '%q' "$SCRIPT")"
+    cat > "$_layout" <<LAYOUT
+layout {
+    tab name="zs" {
+        pane command="bash" close_on_exit=true {
+            args "-lc" "$_cmd"
+            start_suspended false
+        }
+    }
+}
+LAYOUT
+    "${ZS_GHOSTTY_ENV[@]}" ghostty --window-width=120 --window-height=25 \
+        -e zellij --session _zs --new-session-with-layout "$_layout" \
+        2>/dev/null
+    rm -f "$_layout"
+    exit 0
+fi
+
+HEADER='k:kill  d:attach/resurrect  e:del  f:force  r:rename  /:search'
+
+# ── Preview ────────────────────────────────────────────────────────────────────
+if [[ "${1:-}" == "--preview" ]]; then
+    session="${2:-}"
+    [[ -z "$session" ]] && exit 0
+    zellij --session "$session" action dump-layout 2>/dev/null \
+    | python3 -c "
+import sys, re
+lines = sys.stdin.read().split('\n')
+results = []
+current_tab = None
+depth = 0
+skip_depth = None
+for i, line in enumerate(lines):
+    stripped = line.strip()
+    opens = stripped.count('{')
+    closes = stripped.count('}')
+    if skip_depth is not None:
+        depth += opens - closes
+        if depth <= skip_depth: skip_depth = None
+        continue
+    if re.match(r'(new_tab_template|swap_\w+_layout)\b', stripped):
+        skip_depth = depth; depth += opens - closes; continue
+    if re.search(r'\bplugin\b', stripped) and 'location=' in stripped:
+        skip_depth = depth - 1; depth += opens - closes; continue
+    if re.search(r'^\s*tab\b', line) and 'name=' in line and 'max_panes' not in line:
+        m = re.search(r'name=\"([^\"]+)\"', line)
+        if m:
+            if current_tab is not None: results.append(current_tab)
+            current_tab = [m.group(1), []]
+    elif re.search(r'\bpane\b', stripped) and 'command=' in stripped and 'split_direction' not in stripped:
+        if current_tab is not None:
+            m = re.search(r'command=\"([^\"]+)\"', stripped)
+            if m:
+                cmd = m.group(1)
+                name_m = re.search(r'name=\"([^\"]+)\"', stripped)
+                args = []
+                for j in range(i+1, min(i+5, len(lines))):
+                    ns = lines[j].strip()
+                    if ns.startswith('args '):
+                        args = re.findall(r'\"([^\"]+)\"', ns[5:]); break
+                    elif ns and not re.match(r'^[{}]', ns) and not re.match(r'^(start_suspended|focus|size|cwd|borderless|name)\b', ns): break
+                full = (cmd + ' ' + ' '.join(args)) if args else (name_m.group(1) if name_m else cmd)
+                if len(full) > 65: full = full[:62] + '...'
+                current_tab[1].append(full)
+    elif re.search(r'\bpane\b', stripped) and 'name=' in stripped and 'command=' not in stripped and 'split_direction' not in stripped:
+        if current_tab is not None:
+            m = re.search(r'name=\"([^\"]+)\"', stripped)
+            if m: current_tab[1].append(m.group(1))
+    elif re.search(r'\bpane\b', stripped) and 'command=' not in stripped and 'name=' not in stripped and 'split_direction' not in stripped:
+        if current_tab is not None and '{' not in stripped: current_tab[1].append('shell')
+    depth += opens - closes
+if current_tab is not None: results.append(current_tab)
+if not results:
+    print('(no info)')
+else:
+    for tab_name, panes in results:
+        print(f'\033[1;33m{tab_name}\033[0m')
+        for p in panes: print(f'  {p}')
+        if not panes: print('  shell')
+        print()
+" 2>/dev/null || echo "(preview unavailable)"
+    exit 0
+fi
+
+# ── Session list ───────────────────────────────────────────────────────────────
+if [[ "${1:-}" == "--list-sessions" ]]; then
+    zellij ls 2>/dev/null \
+        | sed 's/\x1b\[[0-9;]*m//g' \
+        | awk '
+            /^_zs[[:space:]]/ || $1 == "_zs" { next }
+            /EXITED/ { printf "\033[31m%s\033[0m  (exited)\n", $1; next }
+            NF { print $1 }
+        '
+    if [[ -f "$ZS_EXITED_FILE" ]]; then
+        zellij ls 2>/dev/null \
+            | sed 's/\x1b\[[0-9;]*m//g' \
+            | awk 'NF { print $1 }' \
+            | sort -u > "$ZS_EXITED_FILE.active"
+        while IFS= read -r s; do
+            [[ -z "$s" || "$s" == "_zs" ]] && continue
+            if ! grep -Fxq -- "$s" "$ZS_EXITED_FILE.active"; then
+                printf '\033[31m%s\033[0m  (exited)\n' "$s"
+            fi
+        done < "$ZS_EXITED_FILE"
+        rm -f "$ZS_EXITED_FILE.active"
+    fi
+    exit 0
+fi
+
+# ── Actions ────────────────────────────────────────────────────────────────────
+if [[ "${1:-}" =~ ^--(kill|delete|force)$ ]]; then
+    mode="${1#--}"; shift
+    for raw in "$@"; do
+        s=$(_name "$raw")
+        case "$mode" in
+            kill)   zellij kill-session "$s" 2>/dev/null
+                    _mark_exited "$s" ;;
+            delete) zellij delete-session "$s" 2>/dev/null
+                    _unmark_exited "$s"
+                    _purge_session_info "$s" ;;
+            force)  _delete_session_completely "$s"
+                    _unmark_exited "$s" ;;
+        esac
+    done
+    exit 0
+fi
+
+if [[ "${1:-}" == "--attach" ]]; then
+    s=$(_name "${2:-}")
+    [[ -z "$s" ]] && exit 0
+    "${ZS_GHOSTTY_ENV[@]}" setsid ghostty -e zellij attach --create --force-run-commands "$s" 2>/dev/null &
+    exit 0
+fi
+
+if [[ "${1:-}" == "--rename" ]]; then
+    s=$(_name "${2:-}")
+    [[ -z "$s" ]] && exit 0
+    read -e -i "$s" -p "rename > " newname
+    [[ -z "$newname" || "$newname" == "$s" ]] && exit 0
+    zellij --session "$s" action rename-session "$newname" 2>/dev/null
+    exit 0
+fi
+
+# ── Main ───────────────────────────────────────────────────────────────────────
+trap 'stty sane 2>/dev/null; tput cnorm 2>/dev/null; exit 0' INT TERM
+
+sessions=$("$SCRIPT" --list-sessions)
+
+if [[ -z "$sessions" ]]; then
+    echo "No zellij sessions found."
+    exit 0
+fi
+
+clear
+printf '%s\n' "$sessions" | fzf --multi \
+    --ansi \
+    --disabled \
+    --height=100% \
+    --prompt="zellij > " \
+    --header="$HEADER" \
+    --preview="timeout 4 \"$SCRIPT\" --preview {1} 2>/dev/null || echo '(preview timeout)'" \
+    --preview-window="right:50%:wrap" \
+    --bind="ctrl-c:abort" \
+    --bind="return:toggle" \
+    --bind="ctrl-a:select-all" \
+    --bind="esc:disable-search+clear-query+rebind(k,d,e,f,r)" \
+    --bind="/:enable-search+unbind(k,d,e,f,r)" \
+    --bind="k:execute-silent(\"$SCRIPT\" --kill {+})+reload(\"$SCRIPT\" --list-sessions)+deselect-all" \
+    --bind="d:execute-silent(\"$SCRIPT\" --attach {1})" \
+    --bind="e:execute-silent(\"$SCRIPT\" --delete {+})+reload(\"$SCRIPT\" --list-sessions)+deselect-all" \
+    --bind="f:execute-silent(\"$SCRIPT\" --force {+})+reload(\"$SCRIPT\" --list-sessions)+deselect-all" \
+    --bind="r:execute(\"$SCRIPT\" --rename {1})+reload(\"$SCRIPT\" --list-sessions)" \
+    > /dev/null
+
+stty sane 2>/dev/null
+tput cnorm 2>/dev/null
+zellij kill-session _zs 2>/dev/null
