@@ -8,9 +8,9 @@ with single-key actions.
 
 ## Features
 
+- `a`: attach to a running session or resurrect an exited one
 - `k`: kill a session and keep it visible in `zs` as `(exited)`
-- `d`: attach to a running session or resurrect an exited one
-- `e`: delete a session and remove it from the list
+- `d`: delete a session and remove it from the list
 - `f`: force-delete a session, including stale Zellij server/cache state
 - `r`: rename a session
 - `/`: search mode
@@ -59,9 +59,9 @@ zs
 Keys:
 
 ```text
+a  attach/resurrect selected session
 k  kill selected session; keep it as exited
-d  attach/resurrect selected session
-e  delete selected session
+d  delete selected session
 f  force-delete selected session and stale state
 r  rename selected session
 /  search

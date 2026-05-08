@@ -91,7 +91,7 @@ LAYOUT
     exit 0
 fi
 
-HEADER='k:kill  d:attach/resurrect  e:del  f:force  r:rename  /:search'
+HEADER='a:attach/resurrect  k:kill  d:delete  f:force  r:rename  /:search'
 
 # ── Preview ────────────────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--preview" ]]; then
@@ -238,11 +238,11 @@ printf '%s\n' "$sessions" | fzf --multi \
     --bind="ctrl-c:abort" \
     --bind="return:toggle" \
     --bind="ctrl-a:select-all" \
-    --bind="esc:disable-search+clear-query+rebind(k,d,e,f,r)" \
-    --bind="/:enable-search+unbind(k,d,e,f,r)" \
+    --bind="esc:disable-search+clear-query+rebind(a,k,d,f,r)" \
+    --bind="/:enable-search+unbind(a,k,d,f,r)" \
     --bind="k:execute-silent(\"$SCRIPT\" --kill {+})+reload(\"$SCRIPT\" --list-sessions)+deselect-all" \
-    --bind="d:execute-silent(\"$SCRIPT\" --attach {1})" \
-    --bind="e:execute-silent(\"$SCRIPT\" --delete {+})+reload(\"$SCRIPT\" --list-sessions)+deselect-all" \
+    --bind="a:execute-silent(\"$SCRIPT\" --attach {1})" \
+    --bind="d:execute-silent(\"$SCRIPT\" --delete {+})+reload(\"$SCRIPT\" --list-sessions)+deselect-all" \
     --bind="f:execute-silent(\"$SCRIPT\" --force {+})+reload(\"$SCRIPT\" --list-sessions)+deselect-all" \
     --bind="r:execute(\"$SCRIPT\" --rename {1})+reload(\"$SCRIPT\" --list-sessions)" \
     > /dev/null
