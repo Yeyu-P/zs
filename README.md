@@ -10,10 +10,11 @@ with single-key actions.
 
 - `a`: attach to a running session or resurrect an exited one
 - `k`: kill a session and keep it visible in `zs` as `(exited)`
-- `d`: delete a session and remove it from the list
+- `d`: delete an exited session and remove it from the list
 - `f`: force-delete a session, including stale Zellij server/cache state
 - `r`: rename a session
 - `/`: search mode
+- `*new session*`: create a new Ghostty + Zellij session from the bottom row
 - `_zs` is hidden from the session list
 - optional Ghostty auto-Zellij shell integration
 
@@ -61,11 +62,15 @@ Keys:
 ```text
 a  attach/resurrect selected session
 k  kill selected session; keep it as exited
-d  delete selected session
+d  delete selected exited session
 f  force-delete selected session and stale state
 r  rename selected session
 /  search
 ```
+
+The bottom `*new session*` row opens a new Ghostty window. Press `a` to use the
+next available default name, such as `alpha`, `beta`, or `gamma`; press `r` to
+name it first.
 
 ## Uninstall
 

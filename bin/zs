@@ -5,8 +5,14 @@ SCRIPT=$(realpath "$0")
 ZS_GHOSTTY_ENV=(env GHOSTTY_AUTO_ZELLIJ=0 ZS_SUPPRESS_AUTO_ZELLIJ=1)
 ZS_STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/zs"
 ZS_EXITED_FILE="$ZS_STATE_DIR/exited-sessions"
+ZS_NEW_SESSION_LABEL="*new session*"
 
-_name() { printf '%s' "${1%% *}" | sed 's/\x1b\[[0-9;]*m//g'; }
+_name() {
+    local clean
+    clean=$(printf '%s' "$1" | sed 's/\x1b\[[0-9;]*m//g')
+    [[ "$clean" == "$ZS_NEW_SESSION_LABEL" ]] && { printf '%s' "$clean"; return 0; }
+    printf '%s' "${clean%% *}"
+}
 
 _purge_session_info() {
     local s="${1:-}"
@@ -64,6 +70,58 @@ _current_session() {
         | awk '/\(current\)/{print $1; exit}'
 }
 
+_clean_zellij_ls() {
+    zellij ls 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g'
+}
+
+_session_is_active() {
+    local s="${1:-}"
+    [[ -n "$s" ]] || return 1
+    _clean_zellij_ls | awk -v name="$s" '$1 == name && $0 !~ /EXITED/ { found=1 } END { exit found ? 0 : 1 }'
+}
+
+_session_name_exists() {
+    local s="${1:-}"
+    [[ -n "$s" ]] || return 1
+    if _clean_zellij_ls | awk -v name="$s" '$1 == name { found=1 } END { exit found ? 0 : 1 }'; then
+        return 0
+    fi
+    [[ -f "$ZS_EXITED_FILE" ]] && grep -Fxq -- "$s" "$ZS_EXITED_FILE"
+}
+
+_valid_session_name() {
+    local s="${1:-}"
+    [[ -n "$s" && "$s" != .* && "$s" != */* && "$s" != *" "* && "$s" != *".."* ]]
+}
+
+_next_session_name() {
+    local names=(alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega)
+    local name n
+    for name in "${names[@]}"; do
+        if ! _session_name_exists "$name"; then
+            printf '%s\n' "$name"
+            return 0
+        fi
+    done
+    n=2
+    while :; do
+        for name in "${names[@]}"; do
+            if ! _session_name_exists "$name-$n"; then
+                printf '%s\n' "$name-$n"
+                return 0
+            fi
+        done
+        ((n++))
+    done
+}
+
+_open_session() {
+    local s="${1:-}"
+    [[ -n "$s" ]] || exit 0
+    _unmark_exited "$s"
+    "${ZS_GHOSTTY_ENV[@]}" setsid ghostty -e zellij attach --create --force-run-commands "$s" 2>/dev/null &
+}
+
 # ── Launch ─────────────────────────────────────────────────────────────────────
 if [[ -z "${ZS_INNER:-}" && $# -eq 0 ]]; then
     ZS_CURRENT=$(zellij ls 2>/dev/null \
@@ -97,6 +155,12 @@ HEADER='a:attach/resurrect  k:kill  d:delete  f:force  r:rename  /:search'
 if [[ "${1:-}" == "--preview" ]]; then
     session="${2:-}"
     [[ -z "$session" ]] && exit 0
+    if [[ "$session" == "$ZS_NEW_SESSION_LABEL" ]]; then
+        printf 'Create a new session\n\n'
+        printf 'a  open with an automatic name\n'
+        printf 'r  name it first, then open\n'
+        exit 0
+    fi
     zellij --session "$session" action dump-layout 2>/dev/null \
     | python3 -c "
 import sys, re
@@ -167,18 +231,15 @@ if [[ "${1:-}" == "--list-sessions" ]]; then
             NF { print $1 }
         '
     if [[ -f "$ZS_EXITED_FILE" ]]; then
-        zellij ls 2>/dev/null \
-            | sed 's/\x1b\[[0-9;]*m//g' \
-            | awk 'NF { print $1 }' \
-            | sort -u > "$ZS_EXITED_FILE.active"
+        active_names=$(_clean_zellij_ls | awk 'NF { print $1 }' | sort -u)
         while IFS= read -r s; do
             [[ -z "$s" || "$s" == "_zs" ]] && continue
-            if ! grep -Fxq -- "$s" "$ZS_EXITED_FILE.active"; then
+            if ! grep -Fxq -- "$s" <<< "$active_names"; then
                 printf '\033[31m%s\033[0m  (exited)\n' "$s"
             fi
         done < "$ZS_EXITED_FILE"
-        rm -f "$ZS_EXITED_FILE.active"
     fi
+    printf '%s\n' "$ZS_NEW_SESSION_LABEL"
     exit 0
 fi
 
@@ -187,10 +248,17 @@ if [[ "${1:-}" =~ ^--(kill|delete|force)$ ]]; then
     mode="${1#--}"; shift
     for raw in "$@"; do
         s=$(_name "$raw")
+        [[ -z "$s" || "$s" == "$ZS_NEW_SESSION_LABEL" ]] && continue
         case "$mode" in
             kill)   zellij kill-session "$s" 2>/dev/null
                     _mark_exited "$s" ;;
-            delete) zellij delete-session "$s" 2>/dev/null
+            delete) if _session_is_active "$s"; then
+                        printf '%s is active. Press k to mark it exited, then d to delete.\n' "$s"
+                        printf 'press enter to continue... '
+                        read -r _
+                        continue
+                    fi
+                    zellij delete-session "$s" 2>/dev/null
                     _unmark_exited "$s"
                     _purge_session_info "$s" ;;
             force)  _delete_session_completely "$s"
@@ -203,13 +271,34 @@ fi
 if [[ "${1:-}" == "--attach" ]]; then
     s=$(_name "${2:-}")
     [[ -z "$s" ]] && exit 0
-    "${ZS_GHOSTTY_ENV[@]}" setsid ghostty -e zellij attach --create --force-run-commands "$s" 2>/dev/null &
+    if [[ "$s" == "$ZS_NEW_SESSION_LABEL" ]]; then
+        s=$(_next_session_name)
+    fi
+    _open_session "$s"
     exit 0
 fi
 
 if [[ "${1:-}" == "--rename" ]]; then
     s=$(_name "${2:-}")
     [[ -z "$s" ]] && exit 0
+    if [[ "$s" == "$ZS_NEW_SESSION_LABEL" ]]; then
+        read -e -i "$(_next_session_name)" -p "new session > " newname
+        [[ -z "$newname" ]] && exit 0
+        if ! _valid_session_name "$newname"; then
+            printf 'Invalid session name. Use a simple name without spaces or slashes.\n'
+            printf 'press enter to continue... '
+            read -r _
+            exit 0
+        fi
+        if _session_name_exists "$newname"; then
+            printf '%s already exists.\n' "$newname"
+            printf 'press enter to continue... '
+            read -r _
+            exit 0
+        fi
+        _open_session "$newname"
+        exit 0
+    fi
     read -e -i "$s" -p "rename > " newname
     [[ -z "$newname" || "$newname" == "$s" ]] && exit 0
     zellij --session "$s" action rename-session "$newname" 2>/dev/null
@@ -242,7 +331,7 @@ printf '%s\n' "$sessions" | fzf --multi \
     --bind="/:enable-search+unbind(a,k,d,f,r)" \
     --bind="k:execute-silent(\"$SCRIPT\" --kill {+})+reload(\"$SCRIPT\" --list-sessions)+deselect-all" \
     --bind="a:execute-silent(\"$SCRIPT\" --attach {1})" \
-    --bind="d:execute-silent(\"$SCRIPT\" --delete {+})+reload(\"$SCRIPT\" --list-sessions)+deselect-all" \
+    --bind="d:execute(\"$SCRIPT\" --delete {+})+reload(\"$SCRIPT\" --list-sessions)+deselect-all" \
     --bind="f:execute-silent(\"$SCRIPT\" --force {+})+reload(\"$SCRIPT\" --list-sessions)+deselect-all" \
     --bind="r:execute(\"$SCRIPT\" --rename {1})+reload(\"$SCRIPT\" --list-sessions)" \
     > /dev/null
