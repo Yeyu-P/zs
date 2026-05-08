@@ -5,8 +5,9 @@ SCRIPT=$(realpath "$0")
 ZS_GHOSTTY_ENV=(env GHOSTTY_AUTO_ZELLIJ=0 ZS_SUPPRESS_AUTO_ZELLIJ=1)
 ZS_STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/zs"
 ZS_EXITED_FILE="$ZS_STATE_DIR/exited-sessions"
+ZS_NOTICE_FILE="$ZS_STATE_DIR/notice"
 ZS_NEW_SESSION_LABEL="*new session*"
-HEADER='a:attach/resurrect  k:kill  d:delete  f:force  r:rename  /:search'
+HEADER=$'a attach/resurrect   k kill   d delete\nf force             r rename / search'
 DELETE_HINT='d only deletes exited sessions; press k first'
 
 _name() {
@@ -148,9 +149,41 @@ _open_session() {
     sleep "${ZS_ATTACH_RELOAD_DELAY:-0.8}"
 }
 
-_notify() {
-    command -v notify-send >/dev/null 2>&1 || return 0
-    notify-send --expire-time=3000 "zs" "$1" >/dev/null 2>&1 || true
+_set_notice() {
+    local msg="${1:-}" ttl="${2:-3}" now
+    [[ -n "$msg" ]] || return 0
+    mkdir -p "$ZS_STATE_DIR"
+    now=$(date +%s)
+    {
+        printf '%s\n' "$((now + ttl))"
+        printf '%s\n' "$msg"
+    } > "$ZS_NOTICE_FILE"
+}
+
+_show_notice_if_any() {
+    [[ -f "$ZS_NOTICE_FILE" ]] || return 1
+    local expires now msg remaining
+    IFS= read -r expires < "$ZS_NOTICE_FILE" || return 1
+    msg=$(sed -n '2,$p' "$ZS_NOTICE_FILE")
+    now=$(date +%s)
+    if [[ -z "$expires" || "$now" -ge "$expires" || -z "$msg" ]]; then
+        rm -f "$ZS_NOTICE_FILE"
+        return 1
+    fi
+
+    remaining=$((expires - now))
+    printf '\033[2J\033[H'
+    printf '\n\n\n\n'
+    printf '        +----------------------------------+\n'
+    printf '        |          cannot delete          |\n'
+    printf '        |                                  |\n'
+    printf '        |  d only deletes exited sessions  |\n'
+    printf '        |  press k first                   |\n'
+    printf '        +----------------------------------+\n'
+    sleep "$remaining"
+    printf '\033[2J\033[H'
+    rm -f "$ZS_NOTICE_FILE"
+    return 0
 }
 
 # ── Launch ─────────────────────────────────────────────────────────────────────
@@ -184,6 +217,7 @@ fi
 if [[ "${1:-}" == "--preview" ]]; then
     session="${2:-}"
     [[ -z "$session" ]] && exit 0
+    _show_notice_if_any || true
     if [[ "$session" == "$ZS_NEW_SESSION_LABEL" ]]; then
         printf 'Create a new session\n\n'
         printf 'a  open with an automatic name\n'
@@ -284,7 +318,7 @@ if [[ "${1:-}" =~ ^--(kill|delete|force)$ ]]; then
                     _mark_exited "$s" ;;
             delete) if _session_is_active "$s"; then
                         header_after_delete="$DELETE_HINT"
-                        _notify "$DELETE_HINT"
+                        _set_notice "$DELETE_HINT" 3
                         continue
                     fi
                     if zellij delete-session "$s" 2>/dev/null; then
@@ -378,7 +412,7 @@ printf '%s\n' "$sessions" | fzf --multi \
     --bind="/:enable-search+unbind(a,k,d,f,r)" \
     --bind="k:execute-silent(\"$SCRIPT\" --kill {+})+reload(\"$SCRIPT\" --list-sessions)+deselect-all" \
     --bind="a:execute-silent(\"$SCRIPT\" --attach {})+reload(\"$SCRIPT\" --list-sessions)" \
-    --bind="d:execute-silent(\"$SCRIPT\" --delete {})+reload(\"$SCRIPT\" --list-sessions)+deselect-all" \
+    --bind="d:execute-silent(\"$SCRIPT\" --delete {})+reload(\"$SCRIPT\" --list-sessions)+refresh-preview+deselect-all" \
     --bind="f:execute-silent(\"$SCRIPT\" --force {+})+reload(\"$SCRIPT\" --list-sessions)+deselect-all" \
     --bind="r:execute(\"$SCRIPT\" --rename {})+reload(\"$SCRIPT\" --list-sessions)" \
     > /dev/null
