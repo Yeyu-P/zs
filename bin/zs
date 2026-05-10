@@ -8,7 +8,7 @@ ZS_EXITED_FILE="$ZS_STATE_DIR/exited-sessions"
 ZS_NOTICE_FILE="$ZS_STATE_DIR/notice"
 ZS_NEW_SESSION_LABEL=$'\033[1;7;94m✚ Add New Session\033[0m'
 ZS_NEW_SESSION_LABEL_CLEAN='✚ Add New Session'
-HEADER=$'a attach   k kill   d delete\nf force             r rename / search'
+HEADER=$'a attach   k kill   d delete\nf force    r rename / search'
 DELETE_HINT='d only deletes exited sessions; press k first'
 
 _name() {
@@ -283,8 +283,8 @@ if not results:
     print('(no info)')
 else:
     for tab_name, panes in results:
-        print(f'\033[1;33m{tab_name}\033[0m')
-        for p in panes: print(f'  {p}')
+        print(f'	     \033[1;3;91m● ● ● List of content ● ● ●\033[0m	')
+        for p in panes: print(f'\033[1;3;91m●\033[0m  \033[1;96m{p}\033[0m')
         if not panes: print('  shell')
         print()
 " 2>/dev/null || echo "(preview unavailable)"
