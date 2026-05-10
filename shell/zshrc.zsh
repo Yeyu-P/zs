@@ -21,7 +21,18 @@ _ghostty_auto_zellij() {
                 break
             fi
         done
-        session_name="${session_name:-zellij}"
+        if [[ -z "$session_name" ]]; then
+            local n=2
+            while [[ -z "$session_name" ]]; do
+                for candidate in "${names[@]}"; do
+                    if ! grep -qE "^${candidate}-${n}( |$|\\[)" <<< "$existing"; then
+                        session_name="${candidate}-${n}"
+                        break 2
+                    fi
+                done
+                ((n++))
+            done
+        fi
     fi
 
     zellij attach --create "$session_name"

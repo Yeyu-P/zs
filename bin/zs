@@ -6,14 +6,15 @@ ZS_GHOSTTY_ENV=(env GHOSTTY_AUTO_ZELLIJ=0 ZS_SUPPRESS_AUTO_ZELLIJ=1)
 ZS_STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/zs"
 ZS_EXITED_FILE="$ZS_STATE_DIR/exited-sessions"
 ZS_NOTICE_FILE="$ZS_STATE_DIR/notice"
-ZS_NEW_SESSION_LABEL="*new session*"
-HEADER=$'a attach/resurrect   k kill   d delete\nf force             r rename / search'
+ZS_NEW_SESSION_LABEL=$'\033[1;7;94m✚ Add New Session\033[0m'
+ZS_NEW_SESSION_LABEL_CLEAN='✚ Add New Session'
+HEADER=$'a attach   k kill   d delete\nf force             r rename / search'
 DELETE_HINT='d only deletes exited sessions; press k first'
 
 _name() {
     local clean
     clean=$(printf '%s' "$1" | sed 's/\x1b\[[0-9;]*m//g')
-    [[ "$clean" == "$ZS_NEW_SESSION_LABEL" ]] && { printf '%s' "$clean"; return 0; }
+    [[ "$clean" == "$ZS_NEW_SESSION_LABEL_CLEAN" ]] && { printf '%s' "$ZS_NEW_SESSION_LABEL"; return 0; }
     printf '%s' "${clean%% *}"
 }
 
@@ -22,7 +23,7 @@ _purge_session_info() {
     case "$s" in
         ""|.*|*/*|*..*) return 0 ;;
     esac
-    rm -rf -- "$HOME/.cache/zellij/contract_version_1/session_info/$s"
+    rm -rf -- "${XDG_CACHE_HOME:-$HOME/.cache}/zellij/contract_version_1/session_info/$s"
 }
 
 _mark_exited() {
@@ -162,11 +163,10 @@ _set_notice() {
 
 _show_notice_if_any() {
     [[ -f "$ZS_NOTICE_FILE" ]] || return 1
-    local expires now msg remaining
+    local expires now remaining
     IFS= read -r expires < "$ZS_NOTICE_FILE" || return 1
-    msg=$(sed -n '2,$p' "$ZS_NOTICE_FILE")
     now=$(date +%s)
-    if [[ -z "$expires" || "$now" -ge "$expires" || -z "$msg" ]]; then
+    if [[ -z "$expires" || "$now" -ge "$expires" ]]; then
         rm -f "$ZS_NOTICE_FILE"
         return 1
     fi
@@ -195,6 +195,7 @@ if [[ -z "${ZS_INNER:-}" && $# -eq 0 ]]; then
     _delete_session_completely _zs
 
     _layout=$(mktemp /tmp/zs_layout_XXXXX.kdl)
+    trap 'rm -f "$_layout"' EXIT
     _cmd="ZS_INNER=1 ZS_CURRENT=$(printf '%q' "$ZS_CURRENT") $(printf '%q' "$SCRIPT")"
     cat > "$_layout" <<LAYOUT
 layout {
@@ -206,7 +207,8 @@ layout {
     }
 }
 LAYOUT
-    "${ZS_GHOSTTY_ENV[@]}" ghostty --window-width=120 --window-height=25 \
+    "${ZS_GHOSTTY_ENV[@]}" ghostty --gtk-single-instance=false \
+        --window-width=120 --window-height=25 \
         -e zellij --session _zs --new-session-with-layout "$_layout" \
         2>/dev/null
     rm -f "$_layout"
@@ -218,10 +220,15 @@ if [[ "${1:-}" == "--preview" ]]; then
     session="${2:-}"
     [[ -z "$session" ]] && exit 0
     _show_notice_if_any || true
-    if [[ "$session" == "$ZS_NEW_SESSION_LABEL" ]]; then
-        printf 'Create a new session\n\n'
-        printf 'a  open with an automatic name\n'
-        printf 'r  name it first, then open\n'
+    session_clean=$(printf '%s' "$session" | sed 's/\x1b\[[0-9;]*m//g')
+    if [[ "$session_clean" == "$ZS_NEW_SESSION_LABEL_CLEAN" ]]; then
+        printf '\n\n\n\n'
+        printf '        +----------------------------------+\n'
+        printf '        | \033[1;3;34m★ ★ ★ Create a new session ★ ★ ★\033[0m |\n'
+        printf '        |                                  |\n'
+        printf '        |      \033[34m\033[1ma\033[0m open with an auto name    |\n'
+        printf '        |     \033[34m\033[1mr\033[0m name it first, then open   |\n'
+        printf '        +----------------------------------+\n'
         exit 0
     fi
     zellij --session "$session" action dump-layout 2>/dev/null \
@@ -286,15 +293,15 @@ fi
 
 # ── Session list ───────────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--list-sessions" ]]; then
-    zellij ls 2>/dev/null \
-        | sed 's/\x1b\[[0-9;]*m//g' \
-        | awk '
+    _ls_cache=$(_clean_zellij_ls)
+
+    printf '%s\n' "$_ls_cache" | awk '
             /^_zs[[:space:]]/ || $1 == "_zs" { next }
             /EXITED/ { printf "\033[31m%s\033[0m  (exited)\n", $1; next }
             NF { print $1 }
         '
     if [[ -f "$ZS_EXITED_FILE" ]]; then
-        active_names=$(_clean_zellij_ls | awk 'NF { print $1 }' | sort -u)
+        active_names=$(printf '%s\n' "$_ls_cache" | awk 'NF { print $1 }' | sort -u)
         while IFS= read -r s; do
             [[ -z "$s" || "$s" == "_zs" ]] && continue
             if ! grep -Fxq -- "$s" <<< "$active_names"; then
@@ -382,6 +389,18 @@ if [[ "${1:-}" == "--rename" ]]; then
     fi
     read -e -i "$s" -p "rename > " newname
     [[ -z "$newname" || "$newname" == "$s" ]] && exit 0
+    if ! _valid_session_name "$newname"; then
+        printf 'Invalid session name. Use a simple name without spaces or slashes.\n'
+        printf 'press enter to continue... '
+        read -r _
+        exit 0
+    fi
+    if _session_name_exists "$newname"; then
+        printf '%s already exists.\n' "$newname"
+        printf 'press enter to continue... '
+        read -r _
+        exit 0
+    fi
     zellij --session "$s" action rename-session "$newname" 2>/dev/null
     exit 0
 fi
@@ -419,4 +438,4 @@ printf '%s\n' "$sessions" | fzf --multi \
 
 stty sane 2>/dev/null
 tput cnorm 2>/dev/null
-zellij kill-session _zs 2>/dev/null
+zellij kill-session _zs &>/dev/null
