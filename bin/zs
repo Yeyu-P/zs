@@ -147,7 +147,11 @@ _open_session() {
     [[ -n "$s" ]] || exit 0
     _unmark_exited "$s"
     "${ZS_GHOSTTY_ENV[@]}" setsid ghostty --title="zs-$s" -e zellij attach --create --force-run-commands "$s" 2>/dev/null &
-    sleep "${ZS_ATTACH_RELOAD_DELAY:-0.8}"
+    local i=0
+    while (( i++ < 20 )); do
+        _clean_zellij_ls | awk -v name="$s" '$1 == name { found=1 } END { exit found ? 0 : 1 }' && return 0
+        sleep 0.15
+    done
 }
 
 _set_notice() {
