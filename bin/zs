@@ -420,6 +420,7 @@ printf '%s\n' "$sessions" | fzf --multi \
     --ansi \
     --disabled \
     --height=100% \
+    --layout=reverse \
     --prompt="zellij > " \
     --header="$HEADER" \
     --preview="timeout 4 \"$SCRIPT\" --preview {} 2>/dev/null || echo '(preview timeout)'" \
